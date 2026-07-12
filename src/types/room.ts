@@ -19,3 +19,19 @@ export interface CrearSalaRequest {
   nombre: string
   descripcion?: string
 }
+
+export type TipoCanal = 'TEXTO' | 'VOZ'
+
+export interface Canal {
+  id: string
+  salaId: number
+  nombre: string
+  tipo: TipoCanal
+  creadorId: number
+  fechaCreacion: string
+}
+
+export interface CrearCanalRequest {
+  nombre: string
+  tipo: TipoCanal
+}

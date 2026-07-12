@@ -25,7 +25,7 @@ function Burbuja({ mensaje, esPropio }: { mensaje: Mensaje; esPropio: boolean })
 }
 
 export function ChatPanel() {
-  const { mensajes, enviarMensaje, cargandoHistorial } = useRoomSocket()
+  const { mensajes, enviarMensaje, cargandoMensajes, canalActivo } = useRoomSocket()
   const { auth } = useAuth()
   const [texto, setTexto] = useState('')
   const finRef = useRef<HTMLDivElement>(null)
@@ -42,10 +42,19 @@ export function ChatPanel() {
     setTexto('')
   }
 
+  if (canalActivo?.tipo === 'VOZ') {
+    return (
+      <div className="flex h-full min-w-0 flex-col items-center justify-center gap-1 px-3 text-center">
+        <p className="text-sm font-medium text-text">Canal de voz — próximamente</p>
+        <p className="text-xs text-text-muted">Aún no hay audio en tiempo real en OrcaLab.</p>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full min-w-0 flex-col">
       <div className="flex-1 overflow-y-auto px-3 py-3">
-        {cargandoHistorial ? (
+        {cargandoMensajes ? (
           <p className="text-sm text-text-muted">Cargando chat…</p>
         ) : mensajes.length === 0 ? (
           <p className="text-sm text-text-muted">Aún no hay mensajes. Sé el primero en escribir.</p>

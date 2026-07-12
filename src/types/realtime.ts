@@ -25,6 +25,7 @@ export interface MarcadorRequest {
 export interface Mensaje {
   id: string
   salaId: number
+  canalId: string
   usuarioId: number
   contenido: string
   marcadorId: string | null

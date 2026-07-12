@@ -1,11 +1,43 @@
-import { LogOut, Users } from 'lucide-react'
+import { Check, Copy, LogOut, Users } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Button } from '../../components/ui/Button'
 import { FormAlert } from '../../components/ui/FormAlert'
 import { ApiError } from '../../lib/http'
+import { ChannelList } from '../channels/ChannelList'
 import { useRooms } from './RoomsContext'
 import * as roomsApi from './api'
+
+function CopiarIdSala({ id }: { id: number }) {
+  const [copiado, setCopiado] = useState(false)
+
+  async function handleCopiar() {
+    try {
+      await navigator.clipboard.writeText(String(id))
+      setCopiado(true)
+      setTimeout(() => setCopiado(false), 1500)
+    } catch {
+      // Si el portapapeles no está disponible, no hacemos nada más.
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopiar}
+      title="Copiar ID de la sala"
+      className="mt-1 flex items-center gap-1 text-xs text-text-muted hover:text-text cursor-pointer"
+    >
+      <span>ID: {id}</span>
+      {copiado ? (
+        <Check className="h-3 w-3 text-success" aria-hidden="true" />
+      ) : (
+        <Copy className="h-3 w-3" aria-hidden="true" />
+      )}
+      <span className="sr-only">{copiado ? 'Copiado' : 'Copiar'}</span>
+    </button>
+  )
+}
 
 export function RoomPanel() {
   const { salaId } = useParams()
@@ -60,6 +92,7 @@ export function RoomPanel() {
             <h1 className="truncate font-heading text-base font-semibold text-text">
               {salaActiva.nombre}
             </h1>
+            <CopiarIdSala id={salaActiva.id} />
             {salaActiva.descripcion && (
               <p className="mt-1 line-clamp-2 text-xs text-text-muted">{salaActiva.descripcion}</p>
             )}
@@ -87,28 +120,32 @@ export function RoomPanel() {
         )}
       </div>
 
-      <div className="p-4">
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-text-muted">
-          Unirse por ID
-        </p>
-        <form onSubmit={handleUnirse} className="flex flex-col gap-2" noValidate>
-          {error && <FormAlert message={error} />}
-          <div className="flex gap-2">
-            <input
-              type="number"
-              min={1}
-              value={idParaUnirse}
-              onChange={(e) => setIdParaUnirse(e.target.value)}
-              placeholder="ID de sala"
-              aria-label="ID de sala"
-              className="h-10 min-w-0 flex-1 rounded-control border border-border-strong bg-surface px-3 text-sm text-text
-                placeholder:text-text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            />
-            <Button type="submit" loading={loading} className="h-10 px-3 text-sm">
-              Unirse
-            </Button>
-          </div>
-        </form>
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {salaActiva && <ChannelList />}
+
+        <div className="p-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-text-muted">
+            Unirse por ID
+          </p>
+          <form onSubmit={handleUnirse} className="flex flex-col gap-2" noValidate>
+            {error && <FormAlert message={error} />}
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min={1}
+                value={idParaUnirse}
+                onChange={(e) => setIdParaUnirse(e.target.value)}
+                placeholder="ID de sala"
+                aria-label="ID de sala"
+                className="h-10 min-w-0 flex-1 rounded-control border border-border-strong bg-surface px-3 text-sm text-text
+                  placeholder:text-text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              />
+              <Button type="submit" loading={loading} className="h-10 px-3 text-sm">
+                Unirse
+              </Button>
+            </div>
+          </form>
+        </div>
       </div>
     </aside>
   )

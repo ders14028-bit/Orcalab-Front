@@ -12,6 +12,7 @@ import {
 } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import * as historyApi from './historyApi'
+import * as canalesApi from '../channels/api'
 import type {
   Alerta,
   CursorMensaje,
@@ -22,6 +23,7 @@ import type {
   PresenciaMensaje,
   UsuarioPresente,
 } from '../../types/realtime'
+import type { Canal, TipoCanal } from '../../types/room'
 
 interface CursorRemoto {
   x: number
@@ -29,16 +31,27 @@ interface CursorRemoto {
   actualizado: number
 }
 
+function elegirCanalPorDefecto(canales: Canal[]): string | null {
+  const texto = canales.find((c) => c.tipo === 'TEXTO')
+  return texto?.id ?? canales[0]?.id ?? null
+}
+
 interface RoomSocketValue {
   salaId: number
   estado: EstadoConexion
   presentes: UsuarioPresente[]
+  canales: Canal[]
+  canalActivoId: string | null
+  canalActivo: Canal | null
   mensajes: Mensaje[]
   marcadores: Marcador[]
   alertas: Alerta[]
   alertasToast: Alerta[]
   cursores: Record<number, CursorRemoto>
   cargandoHistorial: boolean
+  cargandoMensajes: boolean
+  seleccionarCanal: (canalId: string) => void
+  crearCanal: (nombre: string, tipo: TipoCanal) => Promise<Canal>
   enviarMensaje: (contenido: string, marcadorId?: string) => void
   enviarMarcador: (payload: MarcadorRequest) => void
   moverCursor: (x: number, y: number) => void
@@ -58,27 +71,33 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
 
   const [estado, setEstado] = useState<EstadoConexion>('conectando')
   const [presentes, setPresentes] = useState<UsuarioPresente[]>([])
+  const [canales, setCanales] = useState<Canal[]>([])
+  const [canalActivoId, setCanalActivoId] = useState<string | null>(null)
   const [mensajes, setMensajes] = useState<Mensaje[]>([])
   const [marcadores, setMarcadores] = useState<Marcador[]>([])
   const [alertas, setAlertas] = useState<Alerta[]>([])
   const [alertasToast, setAlertasToast] = useState<Alerta[]>([])
   const [cursores, setCursores] = useState<Record<number, CursorRemoto>>({})
   const [cargandoHistorial, setCargandoHistorial] = useState(true)
+  const [cargandoMensajes, setCargandoMensajes] = useState(true)
 
+  // Historial a nivel de sala: canales, marcadores y alertas son los mismos sin
+  // importar en qué canal de texto/voz esté parado el usuario.
   useEffect(() => {
     let cancelado = false
     setCargandoHistorial(true)
 
     Promise.all([
-      historyApi.obtenerMensajes(salaId),
+      canalesApi.listarCanales(salaId),
       historyApi.obtenerMarcadores(salaId),
       historyApi.obtenerAlertas(salaId),
     ])
-      .then(([msgs, marks, alerts]) => {
+      .then(([cans, marks, alerts]) => {
         if (cancelado) return
-        setMensajes(msgs)
+        setCanales(cans)
         setMarcadores(marks)
         setAlertas(alerts)
+        setCanalActivoId((prev) => prev ?? elegirCanalPorDefecto(cans))
       })
       .finally(() => {
         if (!cancelado) setCargandoHistorial(false)
@@ -112,9 +131,9 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
         setPresentes(data.presentes)
       })
 
-      client.subscribe(`/topic/sala/${salaId}/chat`, (message: IMessage) => {
-        const mensaje = JSON.parse(message.body) as Mensaje
-        setMensajes((prev) => [...prev, mensaje])
+      client.subscribe(`/topic/sala/${salaId}/canales`, (message: IMessage) => {
+        const canal = JSON.parse(message.body) as Canal
+        setCanales((prev) => (prev.some((c) => c.id === canal.id) ? prev : [...prev, canal]))
       })
 
       client.subscribe(`/topic/sala/${salaId}/marcadores`, (message: IMessage) => {
@@ -163,14 +182,74 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
     }
   }, [salaId, auth?.token, auth?.usuarioId])
 
+  // Suscripción de chat por canal: el chat es lo único que cambia al navegar
+  // entre canales; el mapa, las alertas y la presencia siguen siendo de sala.
+  useEffect(() => {
+    const canalActivo = canales.find((c) => c.id === canalActivoId) ?? null
+
+    // Canal de voz (o aún sin canal activo determinado): no hay historial de chat que cargar.
+    if (canalActivo && canalActivo.tipo !== 'TEXTO') {
+      setMensajes([])
+      setCargandoMensajes(false)
+      return
+    }
+
+    // Todavía no sabemos qué canal está activo o el socket no está listo: se mantiene
+    // el estado de "cargando" hasta poder resolverlo, en vez de mostrar "sin mensajes".
+    if (estado !== 'conectado' || !canalActivoId || !canalActivo) {
+      return
+    }
+
+    const client = clientRef.current
+    if (!client) return
+
+    let cancelado = false
+    setCargandoMensajes(true)
+    setMensajes([])
+
+    historyApi
+      .obtenerMensajes(salaId, canalActivoId)
+      .then((msgs) => {
+        if (!cancelado) setMensajes(msgs)
+      })
+      .finally(() => {
+        if (!cancelado) setCargandoMensajes(false)
+      })
+
+    const suscripcion = client.subscribe(`/topic/sala/${salaId}/canal/${canalActivoId}/chat`, (message: IMessage) => {
+      const mensaje = JSON.parse(message.body) as Mensaje
+      setMensajes((prev) => [...prev, mensaje])
+    })
+
+    return () => {
+      cancelado = true
+      suscripcion.unsubscribe()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [salaId, canalActivoId, estado])
+
+  const seleccionarCanal = useCallback((canalId: string) => {
+    setCanalActivoId(canalId)
+  }, [])
+
+  const crearCanal = useCallback(
+    async (nombre: string, tipo: TipoCanal) => {
+      const canal = await canalesApi.crearCanal(salaId, { nombre, tipo })
+      setCanales((prev) => (prev.some((c) => c.id === canal.id) ? prev : [...prev, canal]))
+      return canal
+    },
+    [salaId],
+  )
+
   const enviarMensaje = useCallback(
     (contenido: string, marcadorId?: string) => {
+      if (!canalActivoId) return
       clientRef.current?.publish({
-        destination: `/app/sala/${salaId}/mensaje`,
+        destination: `/app/sala/${salaId}/canal/${canalActivoId}/mensaje`,
         body: JSON.stringify({ contenido, marcadorId }),
       })
     },
-    [salaId],
+    [salaId, canalActivoId],
   )
 
   const enviarMarcador = useCallback(
@@ -208,17 +287,28 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
     setPresentes((prev) => prev.map((p) => (p.usuarioId === usuarioId ? { ...p, rolEnSala } : p)))
   }, [])
 
+  const canalActivo = useMemo(
+    () => canales.find((c) => c.id === canalActivoId) ?? null,
+    [canales, canalActivoId],
+  )
+
   const value = useMemo<RoomSocketValue>(
     () => ({
       salaId,
       estado,
       presentes,
+      canales,
+      canalActivoId,
+      canalActivo,
       mensajes,
       marcadores,
       alertas,
       alertasToast,
       cursores,
       cargandoHistorial,
+      cargandoMensajes,
+      seleccionarCanal,
+      crearCanal,
       enviarMensaje,
       enviarMarcador,
       moverCursor,
@@ -230,12 +320,18 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       salaId,
       estado,
       presentes,
+      canales,
+      canalActivoId,
+      canalActivo,
       mensajes,
       marcadores,
       alertas,
       alertasToast,
       cursores,
       cargandoHistorial,
+      cargandoMensajes,
+      seleccionarCanal,
+      crearCanal,
       enviarMensaje,
       enviarMarcador,
       moverCursor,
