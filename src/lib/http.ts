@@ -1,3 +1,4 @@
+import { API_BASE } from './apiBase'
 import { getStoredAuth } from './authStorage'
 
 export class ApiError extends Error {
@@ -22,7 +23,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     headers.set('Authorization', `Bearer ${auth.token}`)
   }
 
-  const res = await fetch(path, { ...init, headers })
+  const res = await fetch(API_BASE + path, { ...init, headers })
 
   if (!res.ok) {
     let mensaje = `Error ${res.status}: ${res.statusText}`

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useRoomSocket } from '../realtime/RoomSocketContext'
 import { useNombreUsuario } from '../users/useNombreUsuario'
 import { useAuth } from '../auth/AuthContext'
+import { VoiceChannelPanel } from '../voice/VoiceChannelPanel'
 import type { Mensaje } from '../../types/realtime'
 
 function Burbuja({ mensaje, esPropio }: { mensaje: Mensaje; esPropio: boolean }) {
@@ -43,12 +44,7 @@ export function ChatPanel() {
   }
 
   if (canalActivo?.tipo === 'VOZ') {
-    return (
-      <div className="flex h-full min-w-0 flex-col items-center justify-center gap-1 px-3 text-center">
-        <p className="text-sm font-medium text-text">Canal de voz — próximamente</p>
-        <p className="text-xs text-text-muted">Aún no hay audio en tiempo real en OrcaLab.</p>
-      </div>
-    )
+    return <VoiceChannelPanel canal={canalActivo} />
   }
 
   return (

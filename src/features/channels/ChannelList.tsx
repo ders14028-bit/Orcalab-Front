@@ -1,12 +1,15 @@
-import { Hash, Plus, Trash2, Volume2 } from 'lucide-react'
+import { Hash, MicOff, Plus, Trash2, Volume2 } from 'lucide-react'
 import { useState } from 'react'
 import { useRoomSocket } from '../realtime/RoomSocketContext'
+import { useNombreUsuario } from '../users/useNombreUsuario'
 import { ConfirmModal } from '../../components/ui/ConfirmModal'
 import { CreateChannelModal } from './CreateChannelModal'
+import type { ParticipanteVoz } from '../../types/realtime'
 import type { Canal } from '../../types/room'
 
 export function ChannelList() {
-  const { canales, canalActivoId, seleccionarCanal, eliminarCanal, soyLider, cargandoHistorial } = useRoomSocket()
+  const { canales, canalActivoId, seleccionarCanal, eliminarCanal, soyLider, cargandoHistorial, participantesVozPorCanal } =
+    useRoomSocket()
   const [creando, setCreando] = useState(false)
   const [canalAEliminar, setCanalAEliminar] = useState<Canal | null>(null)
 
@@ -54,6 +57,7 @@ export function ChannelList() {
               puedeEliminar={puedeEliminar}
               onClick={seleccionarCanal}
               onEliminar={setCanalAEliminar}
+              participantesVoz={participantesVozPorCanal[canal.id]}
             />
           ))}
         </ul>
@@ -82,38 +86,60 @@ function FilaCanal({
   puedeEliminar,
   onClick,
   onEliminar,
+  participantesVoz,
 }: {
   canal: Canal
   activo: boolean
   puedeEliminar: boolean
   onClick: (canalId: string) => void
   onEliminar: (canal: Canal) => void
+  participantesVoz?: ParticipanteVoz[]
 }) {
   const Icono = canal.tipo === 'VOZ' ? Volume2 : Hash
 
   return (
-    <li className={`group flex items-center rounded-control ${activo ? 'bg-surface' : 'hover:bg-surface-hover'}`}>
-      <button
-        type="button"
-        onClick={() => onClick(canal.id)}
-        className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-sm cursor-pointer
-          ${activo ? 'text-text' : 'text-text-secondary group-hover:text-text'}`}
-      >
-        <Icono className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
-        <span className="truncate">{canal.nombre}</span>
-      </button>
-      {puedeEliminar && (
+    <li className={`group flex flex-col rounded-control ${activo ? 'bg-surface' : 'hover:bg-surface-hover'}`}>
+      <div className="flex items-center">
         <button
           type="button"
-          onClick={() => onEliminar(canal)}
-          title="Eliminar canal"
-          aria-label={`Eliminar canal ${canal.nombre}`}
-          className="mr-1 hidden h-6 w-6 shrink-0 items-center justify-center rounded text-text-muted
-            hover:text-danger cursor-pointer group-hover:flex"
+          onClick={() => onClick(canal.id)}
+          className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-sm cursor-pointer
+            ${activo ? 'text-text' : 'text-text-secondary group-hover:text-text'}`}
         >
-          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+          <Icono className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
+          <span className="truncate">{canal.nombre}</span>
         </button>
+        {puedeEliminar && (
+          <button
+            type="button"
+            onClick={() => onEliminar(canal)}
+            title="Eliminar canal"
+            aria-label={`Eliminar canal ${canal.nombre}`}
+            className="mr-1 hidden h-6 w-6 shrink-0 items-center justify-center rounded text-text-muted
+              hover:text-danger cursor-pointer group-hover:flex"
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        )}
+      </div>
+      {participantesVoz && participantesVoz.length > 0 && (
+        <ul className="flex flex-col gap-0.5 py-0.5 pl-7 pr-2">
+          {participantesVoz.map((p) => (
+            <ParticipanteVozEnLista key={p.usuarioId} participante={p} />
+          ))}
+        </ul>
       )}
+    </li>
+  )
+}
+
+function ParticipanteVozEnLista({ participante }: { participante: ParticipanteVoz }) {
+  const nombre = useNombreUsuario(participante.usuarioId)
+
+  return (
+    <li className="flex items-center gap-1 text-xs text-text-muted">
+      <span className="truncate">{nombre}</span>
+      {participante.muteado && <MicOff className="h-3 w-3 shrink-0" aria-hidden="true" />}
     </li>
   )
 }

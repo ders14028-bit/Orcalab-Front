@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { API_BASE } from '../../lib/apiBase'
 import { useAuth } from '../auth/AuthContext'
 import { useRooms } from '../rooms/RoomsContext'
 import * as historyApi from './historyApi'
@@ -23,8 +24,11 @@ import type {
   Marcador,
   MarcadorRequest,
   Mensaje,
+  ParticipanteVoz,
   PresenciaMensaje,
   UsuarioPresente,
+  VozMensaje,
+  VozSenalMensaje,
 } from '../../types/realtime'
 import type { Canal, Miembro, RolSala, TipoCanal } from '../../types/room'
 
@@ -55,6 +59,7 @@ interface RoomSocketValue {
   cursores: Record<number, CursorRemoto>
   cargandoHistorial: boolean
   cargandoMensajes: boolean
+  participantesVozPorCanal: Record<string, ParticipanteVoz[]>
   seleccionarCanal: (canalId: string) => void
   crearCanal: (nombre: string, tipo: TipoCanal) => Promise<Canal>
   eliminarCanal: (canalId: string) => Promise<void>
@@ -67,6 +72,13 @@ interface RoomSocketValue {
   quitarMiembroLocal: (usuarioId: number) => void
   actualizarRolMiembroLocal: (usuarioId: number, rolEnSala: RolSala) => void
   refetchMiembros: () => Promise<void>
+  entrarVoz: (canalId: string) => void
+  salirVoz: (canalId: string) => void
+  silenciarVoz: (canalId: string, muteado: boolean) => void
+  enviarOfertaVoz: (canalId: string, paraUsuarioId: number, sdp: string) => void
+  enviarRespuestaVoz: (canalId: string, paraUsuarioId: number, sdp: string) => void
+  enviarIceVoz: (canalId: string, paraUsuarioId: number, candidato: RTCIceCandidateInit) => void
+  suscribirSenalVoz: (handler: (mensaje: VozSenalMensaje) => void) => () => void
 }
 
 const RoomSocketContext = createContext<RoomSocketValue | undefined>(undefined)
@@ -100,6 +112,17 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
   const [cursores, setCursores] = useState<Record<number, CursorRemoto>>({})
   const [cargandoHistorial, setCargandoHistorial] = useState(true)
   const [cargandoMensajes, setCargandoMensajes] = useState(true)
+  // Se incrementa en cada reconexión del socket (no en la conexión inicial) para
+  // re-disparar la carga del historial de sala: lo que llegó por broadcast mientras
+  // el socket estuvo caído (canales, marcadores, alertas, miembros) se perdió y
+  // solo se recupera volviéndolo a pedir por REST.
+  const [reconexiones, setReconexiones] = useState(0)
+  const [participantesVozPorCanal, setParticipantesVozPorCanal] = useState<Record<string, ParticipanteVoz[]>>({})
+
+  // Registro de listeners de señalización WebRTC: useVoiceCall se engancha aquí sin que este
+  // contexto necesite saber nada de RTCPeerConnection — solo reenvía lo que llega por la cola
+  // privada del usuario a quien esté escuchando en ese momento.
+  const senalVozListenersRef = useRef(new Set<(mensaje: VozSenalMensaje) => void>())
 
   // Historial a nivel de sala: canales, marcadores, alertas y miembros son los mismos sin
   // importar en qué canal de texto/voz esté parado el usuario. Los miembros se traen por REST
@@ -109,7 +132,31 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
   // rol" queda pegado toda la sesión porque la presencia solo se recalcula al conectar/desconectar.
   useEffect(() => {
     let cancelado = false
+    let reintentoId: number | undefined
     setCargandoHistorial(true)
+
+    // Una sala nunca puede quedar sin canales (el backend prohíbe eliminar el último),
+    // así que una lista vacía siempre significa "sala recién creada cuyo canal 'general'
+    // aún no fue creado por el consumidor de eventos (polling de 1s)": reintentar con
+    // backoff corto hasta que aparezca, sin pisar canales que lleguen por broadcast.
+    const reintentarCanales = (intento: number) => {
+      reintentoId = window.setTimeout(() => {
+        canalesApi
+          .listarCanales(salaId)
+          .then((cans) => {
+            if (cancelado) return
+            if (cans.length > 0) {
+              setCanales((prev) => (prev.length > 0 ? prev : cans))
+              setCanalActivoId((prev) => prev ?? elegirCanalPorDefecto(cans))
+            } else if (intento < 4) {
+              reintentarCanales(intento + 1)
+            }
+          })
+          .catch(() => {
+            if (!cancelado && intento < 4) reintentarCanales(intento + 1)
+          })
+      }, 1000 * (intento + 1))
+    }
 
     Promise.all([
       canalesApi.listarCanales(salaId),
@@ -119,11 +166,14 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
     ])
       .then(([cans, marks, alerts, mmbrs]) => {
         if (cancelado) return
-        setCanales(cans)
+        setCanales((prev) => (prev.length > 0 && cans.length === 0 ? prev : cans))
         setMarcadores(marks)
         setAlertas(alerts)
         setMiembros(mmbrs)
         setCanalActivoId((prev) => prev ?? elegirCanalPorDefecto(cans))
+        if (cans.length === 0) {
+          reintentarCanales(0)
+        }
       })
       .finally(() => {
         if (!cancelado) setCargandoHistorial(false)
@@ -131,8 +181,9 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
 
     return () => {
       cancelado = true
+      if (reintentoId) clearTimeout(reintentoId)
     }
-  }, [salaId])
+  }, [salaId, reconexiones])
 
   useEffect(() => {
     if (!auth?.token) return
@@ -142,15 +193,23 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
     setCursores({})
 
     const client = new Client({
-      webSocketFactory: () => new SockJS('/ws'),
+      webSocketFactory: () => new SockJS(`${API_BASE}/ws`),
       connectHeaders: { Authorization: `Bearer ${auth.token}` },
       reconnectDelay: 3000,
       heartbeatIncoming: 10000,
       heartbeatOutgoing: 10000,
     })
 
+    // Local al ciclo de vida de ESTE client: distingue la conexión inicial de las
+    // reconexiones automáticas de stompjs sin arrastrar estado entre salas/tokens.
+    let yaConectoAlgunaVez = false
+
     client.onConnect = () => {
       setEstado('conectado')
+      if (yaConectoAlgunaVez) {
+        setReconexiones((n) => n + 1)
+      }
+      yaConectoAlgunaVez = true
 
       client.subscribe(`/topic/sala/${salaId}/presencia`, (message: IMessage) => {
         const data = JSON.parse(message.body) as PresenciaMensaje
@@ -185,7 +244,15 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
 
       client.subscribe(`/topic/sala/${salaId}/canales`, (message: IMessage) => {
         const canal = JSON.parse(message.body) as Canal
-        setCanales((prev) => (prev.some((c) => c.id === canal.id) ? prev : [...prev, canal]))
+        setCanales((prev) => {
+          if (prev.some((c) => c.id === canal.id)) return prev
+          const siguiente = [...prev, canal]
+          // En una sala recién creada, el canal "general" llega por este broadcast
+          // (no por el fetch inicial, que corre antes de que exista): si aún no hay
+          // canal activo, seleccionarlo para que el chat no quede en "cargando".
+          setCanalActivoId((actual) => actual ?? elegirCanalPorDefecto(siguiente))
+          return siguiente
+        })
       })
 
       client.subscribe(`/topic/sala/${salaId}/canales/eliminado`, (message: IMessage) => {
@@ -217,6 +284,13 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
           ...prev,
           [cursor.usuarioId]: { x: cursor.x, y: cursor.y, actualizado: Date.now() },
         }))
+      })
+
+      // Cola privada punto-a-punto (oferta/respuesta/ICE de WebRTC): una sola suscripción para
+      // toda la sesión, reenviada a quien esté escuchando vía suscribirSenalVoz (useVoiceCall).
+      client.subscribe('/user/queue/voz/senal', (message: IMessage) => {
+        const data = JSON.parse(message.body) as VozSenalMensaje
+        senalVozListenersRef.current.forEach((handler) => handler(data))
       })
 
       client.publish({ destination: `/app/sala/${salaId}/entrar`, body: '{}' })
@@ -284,6 +358,27 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [salaId, canalActivoId, estado])
+
+  // Presencia de voz: a diferencia del chat, se suscribe a TODOS los canales de voz de la sala
+  // (no solo el activo), porque ChannelList necesita mostrar quién está en cada llamada en todo
+  // momento, no solo en la que el usuario tiene abierta.
+  useEffect(() => {
+    if (estado !== 'conectado') return
+    const client = clientRef.current
+    if (!client) return
+
+    const canalesVoz = canales.filter((c) => c.tipo === 'VOZ')
+    const suscripciones = canalesVoz.map((canal) =>
+      client.subscribe(`/topic/sala/${salaId}/canal/${canal.id}/voz/presentes`, (message: IMessage) => {
+        const data = JSON.parse(message.body) as VozMensaje
+        setParticipantesVozPorCanal((prev) => ({ ...prev, [canal.id]: data.participantes }))
+      }),
+    )
+
+    return () => {
+      suscripciones.forEach((s) => s.unsubscribe())
+    }
+  }, [salaId, estado, canales])
 
   const seleccionarCanal = useCallback((canalId: string) => {
     setCanalActivoId(canalId)
@@ -370,6 +465,67 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
     setMiembros((prev) => prev.map((m) => (m.usuarioId === usuarioId ? { ...m, rolEnSala } : m)))
   }, [])
 
+  const entrarVoz = useCallback(
+    (canalId: string) => {
+      clientRef.current?.publish({ destination: `/app/sala/${salaId}/canal/${canalId}/voz/entrar`, body: '{}' })
+    },
+    [salaId],
+  )
+
+  const salirVoz = useCallback(
+    (canalId: string) => {
+      clientRef.current?.publish({ destination: `/app/sala/${salaId}/canal/${canalId}/voz/salir`, body: '{}' })
+    },
+    [salaId],
+  )
+
+  const silenciarVoz = useCallback(
+    (canalId: string, muteado: boolean) => {
+      clientRef.current?.publish({
+        destination: `/app/sala/${salaId}/canal/${canalId}/voz/silenciar`,
+        body: JSON.stringify({ muteado }),
+      })
+    },
+    [salaId],
+  )
+
+  const enviarOfertaVoz = useCallback(
+    (canalId: string, paraUsuarioId: number, sdp: string) => {
+      clientRef.current?.publish({
+        destination: `/app/sala/${salaId}/canal/${canalId}/voz/oferta`,
+        body: JSON.stringify({ paraUsuarioId, sdp }),
+      })
+    },
+    [salaId],
+  )
+
+  const enviarRespuestaVoz = useCallback(
+    (canalId: string, paraUsuarioId: number, sdp: string) => {
+      clientRef.current?.publish({
+        destination: `/app/sala/${salaId}/canal/${canalId}/voz/respuesta`,
+        body: JSON.stringify({ paraUsuarioId, sdp }),
+      })
+    },
+    [salaId],
+  )
+
+  const enviarIceVoz = useCallback(
+    (canalId: string, paraUsuarioId: number, candidato: RTCIceCandidateInit) => {
+      clientRef.current?.publish({
+        destination: `/app/sala/${salaId}/canal/${canalId}/voz/ice`,
+        body: JSON.stringify({ paraUsuarioId, candidato }),
+      })
+    },
+    [salaId],
+  )
+
+  const suscribirSenalVoz = useCallback((handler: (mensaje: VozSenalMensaje) => void) => {
+    senalVozListenersRef.current.add(handler)
+    return () => {
+      senalVozListenersRef.current.delete(handler)
+    }
+  }, [])
+
   const refetchMiembros = useCallback(async () => {
     try {
       const data = await roomsApi.listarMiembros(salaId)
@@ -407,6 +563,7 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       cursores,
       cargandoHistorial,
       cargandoMensajes,
+      participantesVozPorCanal,
       seleccionarCanal,
       crearCanal,
       eliminarCanal,
@@ -419,6 +576,13 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       quitarMiembroLocal,
       actualizarRolMiembroLocal,
       refetchMiembros,
+      entrarVoz,
+      salirVoz,
+      silenciarVoz,
+      enviarOfertaVoz,
+      enviarRespuestaVoz,
+      enviarIceVoz,
+      suscribirSenalVoz,
     }),
     [
       salaId,
@@ -436,6 +600,7 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       cursores,
       cargandoHistorial,
       cargandoMensajes,
+      participantesVozPorCanal,
       seleccionarCanal,
       crearCanal,
       eliminarCanal,
@@ -448,6 +613,13 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       quitarMiembroLocal,
       actualizarRolMiembroLocal,
       refetchMiembros,
+      entrarVoz,
+      salirVoz,
+      silenciarVoz,
+      enviarOfertaVoz,
+      enviarRespuestaVoz,
+      enviarIceVoz,
+      suscribirSenalVoz,
     ],
   )
 

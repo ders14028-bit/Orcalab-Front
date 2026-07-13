@@ -69,3 +69,23 @@ export interface CursorMensaje {
 }
 
 export type EstadoConexion = 'conectando' | 'conectado' | 'desconectado' | 'error'
+
+export interface ParticipanteVoz {
+  usuarioId: number
+  muteado: boolean
+}
+
+export interface VozMensaje {
+  tipo: 'ENTRO' | 'SALIO' | 'SILENCIO_CAMBIADO'
+  usuarioId: number
+  participantes: ParticipanteVoz[]
+}
+
+export interface VozSenalMensaje {
+  tipo: 'OFERTA' | 'RESPUESTA' | 'ICE'
+  salaId: number
+  canalId: string
+  deUsuarioId: number
+  sdp?: string
+  candidato?: RTCIceCandidateInit
+}

@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useRooms } from '../features/rooms/RoomsContext'
 
 export function NoRoomSelected() {
-  const { salas, loading } = useRooms()
+  const { salas, loading, error, refetch } = useRooms()
   const location = useLocation()
   const avisoExpulsion = (location.state as { avisoExpulsion?: string } | null)?.avisoExpulsion
 
@@ -15,14 +15,30 @@ export function NoRoomSelected() {
           Fuiste expulsado de «{avisoExpulsion}».
         </div>
       )}
-      <Waves className="h-10 w-10 text-text-muted" aria-hidden="true" />
-      <p className="text-text-secondary">
-        {loading
-          ? 'Cargando tus salas…'
-          : salas.length === 0
-            ? 'Aún no tienes salas. Crea una con el botón "+" del rail.'
-            : 'Selecciona una sala del rail para ver su actividad en tiempo real.'}
-      </p>
+      {!loading && error ? (
+        <>
+          <TriangleAlert className="h-10 w-10 text-red-300" aria-hidden="true" />
+          <p className="text-text-secondary">{error}</p>
+          <button
+            type="button"
+            onClick={() => refetch()}
+            className="rounded-control border border-danger/30 bg-danger-soft px-4 py-2 text-sm text-red-300 hover:brightness-125"
+          >
+            Reintentar
+          </button>
+        </>
+      ) : (
+        <>
+          <Waves className="h-10 w-10 text-text-muted" aria-hidden="true" />
+          <p className="text-text-secondary">
+            {loading
+              ? 'Cargando tus salas…'
+              : salas.length === 0
+                ? 'Aún no tienes salas. Crea una con el botón "+" del rail.'
+                : 'Selecciona una sala del rail para ver su actividad en tiempo real.'}
+          </p>
+        </>
+      )}
     </div>
   )
 }
