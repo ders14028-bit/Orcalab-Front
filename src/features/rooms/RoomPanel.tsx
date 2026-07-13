@@ -1,12 +1,15 @@
-import { Check, Copy, LogOut, Users } from 'lucide-react'
+import { Check, Copy, LogOut, Trash2, Users } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Button } from '../../components/ui/Button'
 import { FormAlert } from '../../components/ui/FormAlert'
 import { ApiError } from '../../lib/http'
 import { ChannelList } from '../channels/ChannelList'
+import { DeleteRoomModal } from './DeleteRoomModal'
+import { useRoomSocket } from '../realtime/RoomSocketContext'
 import { useRooms } from './RoomsContext'
 import * as roomsApi from './api'
+import type { Sala } from '../../types/room'
 
 function CopiarIdSala({ id }: { id: number }) {
   const [copiado, setCopiado] = useState(false)
@@ -36,6 +39,32 @@ function CopiarIdSala({ id }: { id: number }) {
       )}
       <span className="sr-only">{copiado ? 'Copiado' : 'Copiar'}</span>
     </button>
+  )
+}
+
+// Solo se monta cuando salaActiva existe, lo que implica que RoomSocketProvider ya
+// envuelve este árbol (ver RoomShellLayout) — igual que ChannelList. useRoomSocket() nunca
+// debe llamarse directo desde RoomPanel, porque también se renderiza fuera del Provider
+// cuando no hay una sala activa (ej. en "/").
+function EliminarServidorBoton({ sala }: { sala: Sala }) {
+  const { soyLider } = useRoomSocket()
+  const [abierto, setAbierto] = useState(false)
+
+  if (!soyLider) return null
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setAbierto(true)}
+        title="Eliminar servidor"
+        className="flex items-center gap-1 text-xs text-danger hover:underline cursor-pointer"
+      >
+        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+        Eliminar servidor
+      </button>
+      <DeleteRoomModal open={abierto} onClose={() => setAbierto(false)} sala={sala} />
+    </>
   )
 }
 
@@ -110,6 +139,9 @@ export function RoomPanel() {
                 <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
                 Salir
               </button>
+            </div>
+            <div className="mt-1">
+              <EliminarServidorBoton sala={salaActiva} />
             </div>
           </>
         ) : (

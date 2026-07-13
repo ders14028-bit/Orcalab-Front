@@ -10,9 +10,12 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { useRooms } from '../rooms/RoomsContext'
 import * as historyApi from './historyApi'
 import * as canalesApi from '../channels/api'
+import * as roomsApi from '../rooms/api'
 import type {
   Alerta,
   CursorMensaje,
@@ -23,7 +26,7 @@ import type {
   PresenciaMensaje,
   UsuarioPresente,
 } from '../../types/realtime'
-import type { Canal, TipoCanal } from '../../types/room'
+import type { Canal, Miembro, RolSala, TipoCanal } from '../../types/room'
 
 interface CursorRemoto {
   x: number
@@ -40,6 +43,8 @@ interface RoomSocketValue {
   salaId: number
   estado: EstadoConexion
   presentes: UsuarioPresente[]
+  miembros: Miembro[]
+  soyLider: boolean
   canales: Canal[]
   canalActivoId: string | null
   canalActivo: Canal | null
@@ -52,12 +57,16 @@ interface RoomSocketValue {
   cargandoMensajes: boolean
   seleccionarCanal: (canalId: string) => void
   crearCanal: (nombre: string, tipo: TipoCanal) => Promise<Canal>
+  eliminarCanal: (canalId: string) => Promise<void>
   enviarMensaje: (contenido: string, marcadorId?: string) => void
   enviarMarcador: (payload: MarcadorRequest) => void
   moverCursor: (x: number, y: number) => void
   descartarToast: (alertaId: string) => void
   quitarPresenteLocal: (usuarioId: number) => void
   actualizarRolLocal: (usuarioId: number, rolEnSala: 'LIDER' | 'MIEMBRO') => void
+  quitarMiembroLocal: (usuarioId: number) => void
+  actualizarRolMiembroLocal: (usuarioId: number, rolEnSala: RolSala) => void
+  refetchMiembros: () => Promise<void>
 }
 
 const RoomSocketContext = createContext<RoomSocketValue | undefined>(undefined)
@@ -66,11 +75,22 @@ const CURSOR_THROTTLE_MS = 60
 
 export function RoomSocketProvider({ salaId, children }: { salaId: number; children: ReactNode }) {
   const { auth } = useAuth()
+  const { salas, refetch: refetchSalas } = useRooms()
+  const navigate = useNavigate()
   const clientRef = useRef<Client | null>(null)
   const ultimoCursorEnviado = useRef(0)
 
+  // El handler de presencia se registra una sola vez al conectar (ver más abajo) y su closure
+  // quedaría con el "salas" de ese momento — casi seguro `[]`, porque RoomsProvider todavía no
+  // terminó de cargar. Con un ref siempre se lee el valor más reciente en vez de uno viejo.
+  const salasRef = useRef(salas)
+  useEffect(() => {
+    salasRef.current = salas
+  }, [salas])
+
   const [estado, setEstado] = useState<EstadoConexion>('conectando')
   const [presentes, setPresentes] = useState<UsuarioPresente[]>([])
+  const [miembros, setMiembros] = useState<Miembro[]>([])
   const [canales, setCanales] = useState<Canal[]>([])
   const [canalActivoId, setCanalActivoId] = useState<string | null>(null)
   const [mensajes, setMensajes] = useState<Mensaje[]>([])
@@ -81,8 +101,12 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
   const [cargandoHistorial, setCargandoHistorial] = useState(true)
   const [cargandoMensajes, setCargandoMensajes] = useState(true)
 
-  // Historial a nivel de sala: canales, marcadores y alertas son los mismos sin
-  // importar en qué canal de texto/voz esté parado el usuario.
+  // Historial a nivel de sala: canales, marcadores, alertas y miembros son los mismos sin
+  // importar en qué canal de texto/voz esté parado el usuario. Los miembros se traen por REST
+  // (fuente confiable en la base de datos) en vez de derivarse de la presencia por WebSocket:
+  // esta última tarda hasta 1s en reflejar el rol real (se llena de forma asíncrona vía Redis
+  // Streams), y si el usuario es el único conectado a una sala recién creada, ese "aún no sé tu
+  // rol" queda pegado toda la sesión porque la presencia solo se recalcula al conectar/desconectar.
   useEffect(() => {
     let cancelado = false
     setCargandoHistorial(true)
@@ -91,12 +115,14 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       canalesApi.listarCanales(salaId),
       historyApi.obtenerMarcadores(salaId),
       historyApi.obtenerAlertas(salaId),
+      roomsApi.listarMiembros(salaId),
     ])
-      .then(([cans, marks, alerts]) => {
+      .then(([cans, marks, alerts, mmbrs]) => {
         if (cancelado) return
         setCanales(cans)
         setMarcadores(marks)
         setAlertas(alerts)
+        setMiembros(mmbrs)
         setCanalActivoId((prev) => prev ?? elegirCanalPorDefecto(cans))
       })
       .finally(() => {
@@ -128,12 +154,43 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
 
       client.subscribe(`/topic/sala/${salaId}/presencia`, (message: IMessage) => {
         const data = JSON.parse(message.body) as PresenciaMensaje
+
+        // El expulsado también recibe este mensaje (sigue suscrito al topic aunque ya no sea
+        // miembro): en vez de dejarlo viendo una sala congelada con llamadas fallando en
+        // silencio, se lo saca de inmediato con un aviso claro.
+        if (data.tipo === 'MIEMBRO_SALIO' && data.usuarioId === auth?.usuarioId) {
+          const nombreSala = salasRef.current.find((s) => s.id === salaId)?.nombre ?? 'la sala'
+          refetchSalas()
+          navigate('/', { state: { avisoExpulsion: nombreSala } })
+          return
+        }
+
         setPresentes(data.presentes)
+
+        if (data.tipo === 'SALIDA' || data.tipo === 'MIEMBRO_SALIO') {
+          setCursores((prev) => {
+            if (!(data.usuarioId in prev)) return prev
+            const { [data.usuarioId]: _eliminado, ...resto } = prev
+            return resto
+          })
+        }
+
+        // Cambios de membresía (unirse, ser expulsado, cambio de rol): refrescar la lista
+        // completa de miembros por REST, porque el mensaje de presencia solo incluye a quienes
+        // están conectados por WebSocket en este momento, no a la sala completa.
+        if (data.tipo === 'MIEMBRO_UNIDO' || data.tipo === 'MIEMBRO_SALIO' || data.tipo === 'ROL_CAMBIADO') {
+          refetchMiembros()
+        }
       })
 
       client.subscribe(`/topic/sala/${salaId}/canales`, (message: IMessage) => {
         const canal = JSON.parse(message.body) as Canal
         setCanales((prev) => (prev.some((c) => c.id === canal.id) ? prev : [...prev, canal]))
+      })
+
+      client.subscribe(`/topic/sala/${salaId}/canales/eliminado`, (message: IMessage) => {
+        const data = JSON.parse(message.body) as { canalId: string }
+        quitarCanalDelEstado(data.canalId)
       })
 
       client.subscribe(`/topic/sala/${salaId}/marcadores`, (message: IMessage) => {
@@ -232,6 +289,16 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
     setCanalActivoId(canalId)
   }, [])
 
+  // Si el canal eliminado era el activo, cae al canal por defecto disponible; se usa tanto para
+  // la acción local del líder como para el broadcast que reciben los demás clientes conectados.
+  const quitarCanalDelEstado = useCallback((canalId: string) => {
+    setCanales((prev) => {
+      const siguiente = prev.filter((c) => c.id !== canalId)
+      setCanalActivoId((actual) => (actual === canalId ? elegirCanalPorDefecto(siguiente) : actual))
+      return siguiente
+    })
+  }, [])
+
   const crearCanal = useCallback(
     async (nombre: string, tipo: TipoCanal) => {
       const canal = await canalesApi.crearCanal(salaId, { nombre, tipo })
@@ -239,6 +306,14 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       return canal
     },
     [salaId],
+  )
+
+  const eliminarCanal = useCallback(
+    async (canalId: string) => {
+      await canalesApi.eliminarCanal(salaId, canalId)
+      quitarCanalDelEstado(canalId)
+    },
+    [salaId, quitarCanalDelEstado],
   )
 
   const enviarMensaje = useCallback(
@@ -287,6 +362,29 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
     setPresentes((prev) => prev.map((p) => (p.usuarioId === usuarioId ? { ...p, rolEnSala } : p)))
   }, [])
 
+  const quitarMiembroLocal = useCallback((usuarioId: number) => {
+    setMiembros((prev) => prev.filter((m) => m.usuarioId !== usuarioId))
+  }, [])
+
+  const actualizarRolMiembroLocal = useCallback((usuarioId: number, rolEnSala: RolSala) => {
+    setMiembros((prev) => prev.map((m) => (m.usuarioId === usuarioId ? { ...m, rolEnSala } : m)))
+  }, [])
+
+  const refetchMiembros = useCallback(async () => {
+    try {
+      const data = await roomsApi.listarMiembros(salaId)
+      setMiembros(data)
+    } catch {
+      // Si falla (ej. el propio usuario ya no es miembro de esta sala tras ser expulsado),
+      // se mantiene la última lista conocida en vez de dejar una promesa sin manejar.
+    }
+  }, [salaId])
+
+  const soyLider = useMemo(
+    () => miembros.some((m) => m.usuarioId === auth?.usuarioId && m.rolEnSala === 'LIDER'),
+    [miembros, auth?.usuarioId],
+  )
+
   const canalActivo = useMemo(
     () => canales.find((c) => c.id === canalActivoId) ?? null,
     [canales, canalActivoId],
@@ -297,6 +395,8 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       salaId,
       estado,
       presentes,
+      miembros,
+      soyLider,
       canales,
       canalActivoId,
       canalActivo,
@@ -309,17 +409,23 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       cargandoMensajes,
       seleccionarCanal,
       crearCanal,
+      eliminarCanal,
       enviarMensaje,
       enviarMarcador,
       moverCursor,
       descartarToast,
       quitarPresenteLocal,
       actualizarRolLocal,
+      quitarMiembroLocal,
+      actualizarRolMiembroLocal,
+      refetchMiembros,
     }),
     [
       salaId,
       estado,
       presentes,
+      miembros,
+      soyLider,
       canales,
       canalActivoId,
       canalActivo,
@@ -332,12 +438,16 @@ export function RoomSocketProvider({ salaId, children }: { salaId: number; child
       cargandoMensajes,
       seleccionarCanal,
       crearCanal,
+      eliminarCanal,
       enviarMensaje,
       enviarMarcador,
       moverCursor,
       descartarToast,
       quitarPresenteLocal,
       actualizarRolLocal,
+      quitarMiembroLocal,
+      actualizarRolMiembroLocal,
+      refetchMiembros,
     ],
   )
 

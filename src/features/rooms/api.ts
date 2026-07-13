@@ -13,6 +13,10 @@ export function obtenerSala(id: number): Promise<Sala> {
   return apiFetch<Sala>(`/api/salas/${id}`)
 }
 
+export function eliminarSala(id: number): Promise<void> {
+  return apiFetch<void>(`/api/salas/${id}`, { method: 'DELETE' })
+}
+
 export function listarMiembros(id: number): Promise<Miembro[]> {
   return apiFetch<Miembro[]>(`/api/salas/${id}/miembros`)
 }

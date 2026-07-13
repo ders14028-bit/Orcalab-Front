@@ -54,7 +54,10 @@ export interface UsuarioPresente {
 }
 
 export interface PresenciaMensaje {
-  tipo: 'ENTRADA' | 'SALIDA'
+  // ENTRADA/SALIDA: conexión o desconexión real de WebSocket.
+  // MIEMBRO_UNIDO/MIEMBRO_SALIO/ROL_CAMBIADO: cambios de membresía (unirse, salir, ser
+  // expulsado, cambio de rol) propagados desde room-service.
+  tipo: 'ENTRADA' | 'SALIDA' | 'MIEMBRO_UNIDO' | 'MIEMBRO_SALIO' | 'ROL_CAMBIADO'
   usuarioId: number
   presentes: UsuarioPresente[]
 }
