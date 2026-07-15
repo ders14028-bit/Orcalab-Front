@@ -49,10 +49,6 @@ interface EstadoLlamadaVoz {
   muteado: boolean
   streamsRemotos: Record<number, MediaStream>
   error: string | null
-  avisoMicrofono: string | null
-  dispositivos: MediaDeviceInfo[]
-  dispositivoId: string | null
-  seleccionarDispositivo: (id: string) => void
   unirse: (canalId: string) => void
   salir: () => void
   alternarMute: () => void
