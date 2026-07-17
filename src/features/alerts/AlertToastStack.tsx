@@ -1,22 +1,47 @@
 import { TriangleAlert, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useRoomSocket } from '../realtime/RoomSocketContext'
 import { useNombreUsuario } from '../users/useNombreUsuario'
 import type { Alerta } from '../../types/realtime'
 
-const AUTO_DISMISS_MS = 5000
+const AUTO_DISMISS_MS = 8000
 
 function Toast({ alerta, onDismiss }: { alerta: Alerta; onDismiss: () => void }) {
   const nombre = useNombreUsuario(alerta.usuarioId)
 
+  const onDismissRef = useRef(onDismiss)
+  onDismissRef.current = onDismiss
+
+  const restanteMsRef = useRef(AUTO_DISMISS_MS)
+  const inicioRef = useRef(0)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   useEffect(() => {
-    const t = setTimeout(onDismiss, AUTO_DISMISS_MS)
-    return () => clearTimeout(t)
-  }, [onDismiss])
+    inicioRef.current = Date.now()
+    timeoutRef.current = setTimeout(() => onDismissRef.current(), restanteMsRef.current)
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    }
+  }, [])
+
+  const pausar = () => {
+    if (!timeoutRef.current) return
+    clearTimeout(timeoutRef.current)
+    timeoutRef.current = null
+    restanteMsRef.current = Math.max(0, restanteMsRef.current - (Date.now() - inicioRef.current))
+  }
+
+  const reanudar = () => {
+    if (timeoutRef.current) return
+    inicioRef.current = Date.now()
+    timeoutRef.current = setTimeout(() => onDismissRef.current(), restanteMsRef.current)
+  }
 
   return (
     <div
       role="alert"
+      onMouseEnter={pausar}
+      onMouseLeave={reanudar}
       className="flex w-80 items-start gap-2 rounded-card border border-danger/40 bg-danger-soft p-3 shadow-xl"
     >
       <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-danger" aria-hidden="true" />
