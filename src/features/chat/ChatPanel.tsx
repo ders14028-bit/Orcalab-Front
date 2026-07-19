@@ -5,6 +5,7 @@ import { useNombreUsuario } from '../users/useNombreUsuario'
 import { useAuth } from '../auth/AuthContext'
 import { VoiceChannelPanel } from '../voice/VoiceChannelPanel'
 import type { Mensaje } from '../../types/realtime'
+import { formatearHora } from '../../lib/formatDate'
 
 function Burbuja({ mensaje, esPropio }: { mensaje: Mensaje; esPropio: boolean }) {
   const nombre = useNombreUsuario(mensaje.usuarioId)
@@ -12,7 +13,7 @@ function Burbuja({ mensaje, esPropio }: { mensaje: Mensaje; esPropio: boolean })
   return (
     <div className={`flex flex-col ${esPropio ? 'items-end' : 'items-start'}`}>
       <span className="mb-0.5 px-1 text-xs text-text-muted">
-        {esPropio ? 'Tú' : nombre} · {new Date(mensaje.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        {esPropio ? 'Tú' : nombre} · {formatearHora(mensaje.timestamp)}
       </span>
       <div
         className={`max-w-[85%] rounded-control px-3 py-2 text-sm ${

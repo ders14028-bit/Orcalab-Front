@@ -2,6 +2,7 @@ import { TriangleAlert } from 'lucide-react'
 import { useRoomSocket } from '../realtime/RoomSocketContext'
 import { useNombreUsuario } from '../users/useNombreUsuario'
 import type { Alerta } from '../../types/realtime'
+import { formatearHora } from '../../lib/formatDate'
 
 function FilaAlerta({ alerta }: { alerta: Alerta }) {
   const nombre = useNombreUsuario(alerta.usuarioId)
@@ -12,7 +13,7 @@ function FilaAlerta({ alerta }: { alerta: Alerta }) {
       <div className="min-w-0">
         <p className="truncate text-sm text-text">{alerta.descripcion || 'Marcador crítico reportado'}</p>
         <p className="text-xs text-text-muted">
-          {nombre} · {new Date(alerta.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {nombre} · {formatearHora(alerta.timestamp)}
         </p>
       </div>
     </li>

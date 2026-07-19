@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { MapContainer, Marker, Popup, TileLayer, WMSTileLayer, useMap, useMapEvents } from 'react-leaflet'
 import type { LatLng } from 'leaflet'
 import { useAuth } from '../auth/AuthContext'
+import { formatearFechaHora } from '../../lib/formatDate'
 import { useRoomSocket } from '../realtime/RoomSocketContext'
 import { useNombreUsuario } from '../users/useNombreUsuario'
 import { ConfirmModal } from '../../components/ui/ConfirmModal'
@@ -132,7 +133,7 @@ function PopupMarcador({
       <p className="font-semibold text-text">{ETIQUETA_TIPO[marcador.tipo]}</p>
       {marcador.descripcion && <p className="mt-1 text-text-secondary">{marcador.descripcion}</p>}
       <p className="mt-2 text-xs text-text-muted">
-        {nombreAutor} · {new Date(marcador.fechaUltimaEdicion).toLocaleString()}
+        {nombreAutor} · {formatearFechaHora(marcador.fechaUltimaEdicion)}
       </p>
       <div className="mt-2 flex items-center gap-3">
         <button
